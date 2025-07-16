@@ -1,11 +1,261 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="pt-br">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+    <title>Detector de Camisas com JavaScript (v2)</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        #status {
+            font-size: 1.2em;
+            color: #555;
+            margin: 10px;
+        }
+        canvas {
+            border: 3px solid #333;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            max-width: 90%;
+            height: auto;
+        }
+        video {
+            position: absolute;
+            top: -9999px;
+            left: -9999px;
+            width: 1px;
+            height: 1px;
+        }
+        #cameraToggleButton {
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 1em;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            background-color: #007bff;
+            color: white;
+            transition: background-color 0.3s ease;
+        }
+        #cameraToggleButton:hover {
+            background-color: #0056b3;
+        }
+    </style>
 </head>
 <body>
-    
+    <h1>Detector de Pessoas e Cores de Camisa (JS)</h1>
+    <p id="status">Iniciando...</p>
+
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+
+    <button id="cameraToggleButton">Alternar Câmera</button>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const statusText = document.getElementById('status');
+        const ctx = canvas.getContext('2d');
+        const cameraToggleButton = document.getElementById('cameraToggleButton');
+
+        let currentFacingMode = 'user';
+        let model;
+        let animationFrameId;
+
+        function rgbToHsv(r, g, b) {
+            r /= 255; g /= 255; b /= 255;
+
+            let max = Math.max(r, g, b);
+            let min = Math.min(r, g, b);
+            let h, s, v = max;
+
+            let diff = max - min;
+            s = max === 0 ? 0 : diff / max;
+
+            if (max === min) {
+                h = 0;
+            } else {
+                switch (max) {
+                    case r: h = (g - b) / diff + (g < b ? 6 : 0); break;
+                    case g: h = (b - r) / diff + 2; break;
+                    case b: h = (r - g) / diff + 4; break;
+                }
+                h /= 6;
+            }
+            return [h * 360, s, v];
+        }
+
+        function getColorName(r, g, b) {
+            const [h, s, v] = rgbToHsv(r, g, b);
+
+            const colors = [
+                { name: "vermelho", hueRange: [0, 10, 340, 360], minSaturation: 0.2, minValue: 0.2 },
+                { name: "laranja", hueRange: [11, 40], minSaturation: 0.2, minValue: 0.2 },
+                { name: "amarelo", hueRange: [41, 65], minSaturation: 0.2, minValue: 0.2 },
+                { name: "verde", hueRange: [66, 160], minSaturation: 0.2, minValue: 0.2 },
+                { name: "ciano", hueRange: [161, 200], minSaturation: 0.2, minValue: 0.2 },
+                { name: "azul", hueRange: [201, 260], minSaturation: 0.2, minValue: 0.2 },
+                { name: "roxo", hueRange: [261, 300], minSaturation: 0.2, minValue: 0.2 },
+                { name: "rosa", hueRange: [301, 339], minSaturation: 0.2, minValue: 0.2 },
+            ];
+
+            if (v < 0.15) return "preto";
+            if (v > 0.85 && s < 0.15) return "branco";
+            if (s < 0.15) return "cinza";
+
+            for (const color of colors) {
+                let inRange = false;
+                if (color.hueRange.length === 2) {
+                    if (h >= color.hueRange[0] && h <= color.hueRange[1]) {
+                        inRange = true;
+                    }
+                } else if (color.hueRange.length === 4) {
+                    if ((h >= color.hueRange[0] && h <= color.hueRange[1]) || (h >= color.hueRange[2] && h <= color.hueRange[3])) {
+                        inRange = true;
+                    }
+                }
+
+                if (inRange && s >= color.minSaturation && v >= color.minValue) {
+                    return color.name;
+                }
+            }
+            return "indefinido";
+        }
+
+        // A função speak e suas variáveis de controle foram removidas.
+
+        async function setupCamera(facingMode) {
+            statusText.innerText = 'Acessando câmera... Por favor, aceite a permissão.';
+            try {
+                if (video.srcObject) {
+                    video.srcObject.getTracks().forEach(track => track.stop());
+                }
+
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: facingMode },
+                    audio: false
+                });
+                video.srcObject = stream;
+                return new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        console.log("Metadados do vídeo carregados.");
+                        statusText.innerText = 'Câmera pronta. Iniciando detecção...';
+                        resolve(video);
+                    };
+                });
+            } catch (error) {
+                console.error("Erro ao acessar a câmera: ", error);
+                statusText.innerText = 'Erro ao acessar a câmera. Verifique as permissões no seu navegador e tente novamente.';
+            }
+        }
+
+        async function main() {
+            statusText.innerText = 'Carregando modelo de IA...';
+            model = await cocoSsd.load();
+            console.log("Modelo COCO-SSD carregado.");
+
+            const videoElement = await setupCamera(currentFacingMode);
+            if (!videoElement) return;
+
+            try {
+                await videoElement.play();
+                console.log("Vídeo começou a tocar.");
+            } catch(err) {
+                console.error("Erro ao tentar tocar o vídeo:", err);
+                statusText.innerText = "Não foi possível iniciar o vídeo. Interaja com a página e tente novamente.";
+                return;
+            }
+
+            canvas.width = videoElement.videoWidth;
+            canvas.height = videoElement.videoHeight;
+            console.log(`Canvas redimensionado para: ${canvas.width}x${canvas.height}`);
+
+            statusText.style.display = 'none';
+            detectFrame(model);
+        }
+
+        function detectFrame(model) {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            model.detect(canvas).then(predictions => {
+                predictions.forEach(prediction => {
+                    if (prediction.class === 'person') {
+                        const [x, y, width, height] = prediction.bbox;
+                        ctx.strokeStyle = '#00FF00';
+                        ctx.lineWidth = 4;
+                        ctx.strokeRect(x, y, width, height);
+                        
+                        const shirtY = y + height * 0.25;
+                        const shirtHeight = height * 0.30; 
+                        
+                        const shirtX = x + width * 0.1;
+                        const shirtWidth = width * 0.8; 
+
+                        if (shirtWidth > 0 && shirtHeight > 0) {
+                            const imageData = ctx.getImageData(shirtX, shirtY, shirtWidth, shirtHeight).data;
+                            let r = 0, g = 0, b = 0;
+                            const step = 20;
+                            let sampledPixels = 0;
+                            for (let i = 0; i < imageData.length; i += 4 * step) {
+                                if (imageData[i] !== undefined) {
+                                    r += imageData[i];
+                                    g += imageData[i + 1];
+                                    b += imageData[i + 2];
+                                    sampledPixels++;
+                                }
+                            }
+                            
+                            if (sampledPixels > 0) {
+                                r = Math.floor(r / sampledPixels);
+                                g = Math.floor(g / sampledPixels);
+                                b = Math.floor(b / sampledPixels);
+                                const colorName = getColorName(r, g, b);
+
+                                ctx.fillStyle = '#00FF00';
+                                ctx.font = 'bold 20px Arial';
+                                ctx.fillText(`Camisa: ${colorName}`, x, y > 20 ? y - 10 : y + height + 20);
+                                // A chamada para speak() foi removida daqui.
+                            }
+                        }
+                    }
+                });
+                animationFrameId = requestAnimationFrame(() => detectFrame(model));
+            });
+        }
+
+        cameraToggleButton.addEventListener('click', async () => {
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+
+            currentFacingMode = (currentFacingMode === 'user') ? 'environment' : 'user';
+            
+            const videoElement = await setupCamera(currentFacingMode);
+            if (videoElement) {
+                try {
+                    await videoElement.play();
+                    canvas.width = videoElement.videoWidth;
+                    canvas.height = videoElement.videoHeight;
+                    statusText.style.display = 'none';
+                    detectFrame(model);
+                } catch(err) {
+                    console.error("Erro ao tentar tocar o vídeo após alternar câmera:", err);
+                    statusText.innerText = "Não foi possível iniciar o vídeo. Interaja com a página e tente novamente.";
+                }
+            }
+        });
+
+        main();
+    </script>
 </body>
 </html>
